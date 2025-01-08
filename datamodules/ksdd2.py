@@ -27,9 +27,24 @@ def get_default_resolution():
 def read_split(
     root: Path, num_segmented: NumSegmented, split: Split
 ) -> list[tuple[int, bool]]:
-    fn = root / f"split_weakly_{num_segmented.value}.pyb"
-    with open(fn, "rb") as f:
-        train_samples, test_samples = pickle.load(f)
+    # fn = root / f"split_weakly_{num_segmented.value}.pyb"
+    # with open(fn, "rb") as f:
+        # train_samples, test_samples = pickle.load(f)
+        # if split == "train":
+        #     return train_samples
+        # elif split == "test":
+        #     return test_samples
+        # else:
+        #     raise Exception(f"Unknown split {split}")
+
+        # ksdd dataset
+        # range of data sample names
+        # 10000.png 10000_GT.png 10000_Mask.png
+        #   to 
+        # 12329.png 12329_GT.png 12329_Mask.png
+        train_samples = [(num, True) for num in range(10000, 12330)]
+        test_samples = [(num, True) for num in range(20000, 21003)]
+
         if split == "train":
             return train_samples
         elif split == "test":
@@ -85,7 +100,7 @@ class KSDD2Dataset(SSNDataset):
         # read the split with given number of segmented samples
         split_samples = read_split(self.root, self.num_segmented, self.split)
 
-        # read into form "root, split, sample_id, image_path, mask_path" and only take samples that are segmented.
+        # read into form "root, split, sample_id, image_path, mask_path, object_mask" and only take samples that are segmented.
         # This enables us to have mixed supervised setup, while test remains fully segmented
         samples_list = [
             [
@@ -94,13 +109,14 @@ class KSDD2Dataset(SSNDataset):
                 self.split.value,
                 str(self.root / self.split.value / f"{sample_id}.png"),
                 str(self.root / self.split.value / f"{sample_id}_GT.png"),
+                str(self.root / self.split.value / f"{sample_id}_Mask.png"),
             ]
             for sample_id, is_segmented in split_samples
             if is_segmented
         ]
         samples = DataFrame(
             samples_list,
-            columns=["path", "sample_id", "split", "image_path", "mask_path"],
+            columns=["path", "sample_id", "split", "image_path", "mask_path", "object_mask_path"],
         )
         samples["label_index"] = samples["mask_path"].apply(is_mask_anomalous)
         samples.label_index = samples.label_index.astype(int)

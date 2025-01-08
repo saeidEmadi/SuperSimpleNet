@@ -17,6 +17,7 @@ from datamodules.visa import Visa
 from datamodules.ksdd2 import KSDD2
 from datamodules.sensum import Sensum
 from model.supersimplenet import SuperSimpleNet
+import torch.nn.functional as F
 
 
 @torch.no_grad()
@@ -58,7 +59,20 @@ def eval(
     }
     for batch in tqdm(test_loader, position=0, leave=True):
         image_batch = batch["image"].to(device)
-        anomaly_map, anomaly_score = model.forward(image_batch)
+
+        # Fetch object mask if available
+        object_mask = batch.get("object_mask", None) 
+
+        if object_mask is not None:
+            object_mask = object_mask.to(device).float()
+            object_mask = F.interpolate(
+                object_mask.unsqueeze(1),
+                size=(model.fh, model.fw),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        anomaly_map, anomaly_score = model.forward(image_batch, object_mask=object_mask)
 
         anomaly_map = anomaly_map.detach().cpu()
         anomaly_score = anomaly_score.detach().cpu()
@@ -83,12 +97,6 @@ def eval(
 
     # normalize
     if normalize:
-        results["anomaly_map"] = (
-            results["anomaly_map"] - results["anomaly_map"].flatten().min()
-        ) / (
-            results["anomaly_map"].flatten().max()
-            - results["anomaly_map"].flatten().min()
-        )
         results["score"] = (results["score"] - results["score"].min()) / (
             results["score"].max() - results["score"].min()
         )
@@ -191,7 +199,7 @@ def get_ksdd2(config):
         train_batch_size=config["batch"],
         eval_batch_size=config["batch"],
         num_workers=config["num_workers"],
-        num_segmented=ksdd2.NumSegmented.N246,
+        num_segmented=ksdd2.NumSegmented.N0,
         seed=config["seed"],
         flips=False,
     )
@@ -447,10 +455,10 @@ def run_eval(datasets, run_id):
 
 
 if __name__ == "__main__":
-    run_eval(datasets=["mvtec", "visa", "ksdd2", "sensum"], run_id=0)
+    run_eval(datasets=["ksdd2"], run_id=0)
     # to get mean and std of multiple runs, specify them with run_ids
     generate_result_json(
         run_ids=["0"],
-        datasets=["mvtec", "visa", "ksdd2", "sensum"],
+        datasets=["ksdd2"],
         res_path=Path("./eval_res"),
     )

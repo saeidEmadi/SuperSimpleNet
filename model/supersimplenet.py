@@ -63,10 +63,17 @@ class SuperSimpleNet(nn.Module):
         images: Tensor,
         mask: Tensor = None,
         label: Tensor = None,
+        object_mask: Tensor = None,
     ) -> Tensor | tuple[Tensor, Tensor]:
         # feature extraction, upscaling and neigh. aggregation
         # [B, F_dim, H, W]
         features = self.feature_extractor(images)
+
+        # Apply object mask to features if provided
+        if object_mask is not None:
+            object_mask_scaled = F.interpolate(object_mask, size=features.shape[-2:], mode="bilinear", align_corners=False)
+            features = features * object_mask_scaled
+
         adapted = self.feature_adaptor(features)
 
         if self.training:
@@ -74,16 +81,27 @@ class SuperSimpleNet(nn.Module):
             if self.config["noise"]:
                 # also returns adjusted labels and masks
                 final_features, mask, label = self.anomaly_generator(
-                    adapted, mask, label
+                    adapted, mask, label, object_mask
                 )
             else:
                 final_features = adapted
 
             anomaly_map, anomaly_score = self.discriminator(final_features)
+
+            # Apply object mask to anomaly   map
+            if object_mask is not None:
+                object_mask = object_mask.repeat(anomaly_map.size(0) // object_mask.size(0), 1, 1, 1)
+                anomaly_map = anomaly_map * object_mask
+
             return anomaly_map, anomaly_score, mask, label
         else:
             anomaly_map, anomaly_score = self.discriminator(adapted)
             anomaly_map = self.anomaly_map_generator(anomaly_map)
+
+            # Apply object mask to anomaly map
+            if object_mask is not None:
+                object_mask = F.interpolate(object_mask, size=(anomaly_map.size(2), anomaly_map.size(3)), mode='bilinear', align_corners=False)
+                anomaly_map = anomaly_map * object_mask
 
             return anomaly_map, anomaly_score
 
@@ -212,6 +230,8 @@ class Discriminator(nn.Module):
 
         self.apply(init_weights)
 
+        self.sigmoid = nn.Sigmoid()
+
     def get_params(self):
         seg_params = self.seg.parameters()
         dec_params = list(self.dec_head.parameters()) + list(self.fc_score.parameters())
@@ -244,6 +264,8 @@ class Discriminator(nn.Module):
             dim=(2, 3)
         )
         score = self.fc_score(dec_cat).squeeze(dim=1)
+
+        map = self.sigmoid(map)
 
         return map, score
 
@@ -337,7 +359,7 @@ class AnomalyGenerator(nn.Module):
         return torch.cat(perlin)
 
     def forward(
-        self, input: Tensor, mask: Tensor, labels: Tensor
+        self, input: Tensor, mask: Tensor, labels: Tensor, object_mask: Tensor = None
     ) -> tuple[Tensor, Tensor, Tensor]:
         b, _, h, w = mask.shape
 
@@ -359,6 +381,11 @@ class AnomalyGenerator(nn.Module):
         noise_mask = torch.ones(
             b * 2, 1, h, w, device=input.device, requires_grad=False
         )
+
+        # Respect the object mask: apply noise only within object_mask
+        if object_mask is not None:
+            object_mask = object_mask.repeat(noise_mask.size(0) // object_mask.size(0), 1, 1, 1)
+            noise_mask = noise_mask * object_mask
 
         if not self.config["bad"]:
             # reshape so it can be multiplied

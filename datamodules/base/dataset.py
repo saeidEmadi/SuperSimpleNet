@@ -175,7 +175,7 @@ class SSNDataset(Dataset):
             index: current index of image to retrieve
 
         Returns:
-            (tuple[str, str, int]): image path, mask path, label index
+            (tuple[str, str, str int]): image path, object_mask, mask path, label index
         """
         if self.split == Split.TRAIN:
             if index >= self.generated_num_pos:
@@ -188,12 +188,14 @@ class SSNDataset(Dataset):
                 image_path = self._normal_samples.iloc[ix].image_path
                 mask_path = self._normal_samples.iloc[ix].mask_path
                 label_index = self._normal_samples.iloc[ix].label_index
+                object_mask_path = self._normal_samples.iloc[ix].object_mask_path
             else:
                 # to get actual index of positive
                 ix = index % self.num_pos
                 image_path = self._anomalous_samples.iloc[ix].image_path
                 mask_path = self._anomalous_samples.iloc[ix].mask_path
                 label_index = self._anomalous_samples.iloc[ix].label_index
+                object_mask_path = self._anomalous_samples.iloc[ix].object_mask_path
         # test
         else:
             if index < self.num_neg:
@@ -201,13 +203,15 @@ class SSNDataset(Dataset):
                 image_path = self._normal_samples.iloc[ix].image_path
                 mask_path = self._normal_samples.iloc[ix].mask_path
                 label_index = self._normal_samples.iloc[ix].label_index
+                object_mask_path = self._normal_samples.iloc[ix].object_mask_path
             else:
                 ix = index - self.num_neg
                 image_path = self._anomalous_samples.iloc[ix].image_path
                 mask_path = self._anomalous_samples.iloc[ix].mask_path
                 label_index = self._anomalous_samples.iloc[ix].label_index
+                object_mask_path = self._anomalous_samples.iloc[ix].object_mask_path
 
-        return image_path, mask_path, label_index
+        return image_path, mask_path, object_mask_path, label_index
 
     def get_flip_augmentation(self, index) -> A.DualTransform | None | A.Compose:
         """
@@ -284,7 +288,7 @@ class SSNDataset(Dataset):
             # we have labeled, so we need freq distr
             self.generate_permutation()
 
-        image_path, mask_path, label_index = self.get_sample_data(index)
+        image_path, mask_path, object_mask_path, label_index = self.get_sample_data(index)
 
         image = read_image(image_path)
         item = dict(image_path=image_path, label=label_index)
@@ -294,6 +298,8 @@ class SSNDataset(Dataset):
             mask = np.zeros(shape=image.shape[:2])
         else:
             mask = cv2.imread(mask_path, flags=0) / 255.0
+            
+        object_mask = cv2.imread(object_mask_path, flags=0) / 255.0
 
         if (self.flips or self.normal_flips) and (self.split == Split.TRAIN):
             # if current image is selected to be flip augmented
@@ -304,10 +310,13 @@ class SSNDataset(Dataset):
                 mask = flip_transformed["mask"]
 
         transformed = self.transform(image=image, mask=mask)
+        transformed_object_mask = self.transform(image=image, mask=object_mask)
 
         item["image"] = transformed["image"]
         item["mask_path"] = mask_path
         item["mask"] = transformed["mask"]
+        # Add object mask to the item
+        item["object_mask"] = transformed_object_mask["mask"]
 
         self.counter = self.counter + 1
 

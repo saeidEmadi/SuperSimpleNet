@@ -30,7 +30,7 @@ from model.supersimplenet import SuperSimpleNet
 
 from common.visualizer import Visualizer
 from common.results_writer import ResultsWriter
-from common.loss import focal_loss
+from common.loss import calc_loss
 
 
 def train(
@@ -46,6 +46,7 @@ def train(
 ):
     model.to(device)
     optimizer, scheduler = model.get_optimizers()
+    bestLoss = float('inf')
 
     model.train()
     train_loader = datamodule.train_dataloader()
@@ -63,6 +64,17 @@ def train(
 
                 image_batch = batch["image"].to(device)
 
+                # Fetch object mask if available
+                object_mask = batch.get("object_mask", None)
+                if object_mask is not None:
+                    object_mask = object_mask.to(device).float()
+                    object_mask = F.interpolate(
+                        object_mask.unsqueeze(1),
+                        size=(model.fh, model.fw),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+
                 # best downsampling proposed by DestSeg
                 mask = batch["mask"].to(device).type(torch.float32)
                 mask = F.interpolate(
@@ -78,30 +90,12 @@ def train(
                 label = batch["label"].to(device).type(torch.float32)
 
                 anomaly_map, score, mask, label = model.forward(
-                    image_batch, mask, label
+                    image_batch, mask, label, object_mask
                 )
 
                 # adjusted truncated l1: mask + flipped sign (ano->pos, good->neg)
-                normal_scores = anomaly_map[mask == 0]
-                anomalous_scores = anomaly_map[mask > 0]
-                true_loss = torch.clip(normal_scores + th, min=0)
-                fake_loss = torch.clip(-anomalous_scores + th, min=0)
 
-                if len(true_loss):
-                    true_loss = true_loss.mean()
-                else:
-                    true_loss = 0
-                if len(fake_loss):
-                    fake_loss = fake_loss.mean()
-                else:
-                    fake_loss = 0
-
-                loss = (
-                    true_loss
-                    + fake_loss
-                    + focal_loss(torch.sigmoid(anomaly_map), mask)
-                    + focal_loss(torch.sigmoid(score), label)
-                )
+                loss = calc_loss(anomaly_map, mask, th, score, label, object_mask)
 
                 loss.backward()
 
@@ -124,14 +118,22 @@ def train(
                 prog_bar.update(1)
 
             if (epoch + 1) % eval_step_size == 0:
-                results = test(
+                results, loss = test(
                     model=model,
                     datamodule=datamodule,
                     device=device,
                     image_metrics=image_metrics,
                     pixel_metrics=pixel_metrics,
+                    th=th,
                     normalize=True,
                 )
+                print("\n\t[test loss : ",loss,"]\n")
+                if(bestLoss > loss):
+                    bestLoss = loss
+                    model.save_model(
+                        Path(f"./best_loss_weight")
+                    )
+                    print(f"\n\t[S] Epoch {epoch + 1}: New best loss {bestLoss}. Model saved.\n")
                 if LOG_WANDB:
                     wandb.log({**results, **output})
             else:
@@ -149,6 +151,7 @@ def test(
     device: str,
     image_metrics: dict[str, Metric],
     pixel_metrics: dict[str, Metric],
+    th: float = 0.5,
     normalize: bool = True,
     image_save_path: Path = None,
     score_save_path: Path = None,
@@ -178,22 +181,50 @@ def test(
         "label": [],
         "image_path": [],
         "mask_path": [],
+        "loss" : [],
     }
     for batch in tqdm(test_loader, position=0, leave=True):
         image_batch = batch["image"].to(device)
-        anomaly_map, anomaly_score = model.forward(image_batch)
 
+        # Fetch object mask if available
+        object_mask = batch.get("object_mask", None)
+
+        if object_mask is not None:
+            object_mask = object_mask.to(device).float()
+            object_mask = F.interpolate(
+                object_mask.unsqueeze(1),
+                size=(model.fh, model.fw),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        anomaly_map, anomaly_score = model.forward(image_batch, object_mask=object_mask)
+
+        # Apply object mask to anomaly map and ground truth if provided
+        if object_mask is not None:
+            object_mask = F.interpolate(
+                object_mask, size=anomaly_map.shape[-2:], mode="bilinear", align_corners=False
+            )
+            object_mask = object_mask.to(anomaly_map.device)
+            anomaly_map = anomaly_map * object_mask
+
+        score = torch.sigmoid(anomaly_score)
+        label = batch["label"].detach().cpu()
+
+        loss =  calc_loss(anomaly_map, batch["mask"].unsqueeze(1), th, score, label, object_mask)
+    
         anomaly_map = anomaly_map.detach().cpu()
         anomaly_score = anomaly_score.detach().cpu()
 
         results["anomaly_map"].append(anomaly_map.detach().cpu())
         results["gt_mask"].append(batch["mask"].detach().cpu())
 
-        results["score"].append(torch.sigmoid(anomaly_score))
+        results["loss"].append(loss.detach().cpu())
+        results["score"].append(score)
         results["seg_score"].append(
             anomaly_map.reshape(anomaly_map.shape[0], -1).max(dim=1).values
         )
-        results["label"].append(batch["label"].detach().cpu())
+        results["label"].append(label)
 
         results["image_path"].extend(batch["image_path"])
         results["mask_path"].extend(batch["mask_path"])
@@ -203,15 +234,10 @@ def test(
     results["seg_score"] = torch.cat(results["seg_score"])
     results["gt_mask"] = torch.cat(results["gt_mask"])
     results["label"] = torch.cat(results["label"])
+    results["loss"] = sum(results['loss'])
 
     # normalize
     if normalize:
-        results["anomaly_map"] = (
-            results["anomaly_map"] - results["anomaly_map"].flatten().min()
-        ) / (
-            results["anomaly_map"].flatten().max()
-            - results["anomaly_map"].flatten().min()
-        )
         results["score"] = (results["score"] - results["score"].min()) / (
             results["score"].max() - results["score"].min()
         )
@@ -283,7 +309,7 @@ def test(
         with open(score_save_path / "scores.json", "w") as f:
             json.dump(score_dict, f)
 
-    return results_dict
+    return results_dict , results['loss'].item()
 
 
 def train_and_eval(model, datamodule, config, device):
@@ -325,7 +351,7 @@ def train_and_eval(model, datamodule, config, device):
     except Exception as e:
         print("Error saving checkpoint" + str(e))
 
-    results = test(
+    results, _ = test(
         model=model,
         datamodule=datamodule,
         device=device,
@@ -672,8 +698,8 @@ def run_sup(data_name):
 
 
 def main():
-    run_unsup(sys.argv[1])
-    run_sup(sys.argv[1])
+    # run_unsup(sys.argv[1])
+    run_sup("ksdd2")
 
 
 if __name__ == "__main__":
