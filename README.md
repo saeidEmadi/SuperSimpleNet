@@ -1,6 +1,6 @@
 # [ICPR 2024] SuperSimpleNet
 
-Official implementation of [SuperSimpleNet : Unifying Unsupervised and Supervised Learning for Fast and Reliable Surface Defect Detection](https://arxiv.org/abs/2408.03143) - ICPR 2024.
+implementation of [SuperSimpleNet : Unifying Unsupervised and Supervised Learning for Fast and Reliable Surface Defect Detection](https://arxiv.org/abs/2408.03143) - ICPR 2024.
 
 ## Environment
 ```bash
@@ -83,8 +83,6 @@ Evaluate using the checkpoints:
 python eval.py
 ```
 
-Slurm script `run_slurm_eval.sh` is also provided to execute evaluation on a slurm based system.
-
 ---
 Config for the model and datasets is contained within the eval.py file. 
 
@@ -93,11 +91,9 @@ Config for the model and datasets is contained within the eval.py file.
 Train the model:
 
 ```bash
-python train.py <dataset_name>
+python train.py
 ```
-Possible dataset names are: `mvtec`, `visa`, `sensum`, and `ksdd2`.
-
-Slurm script `run_slurm_train.sh` is also provided to execute training on a slurm based system.
+Possible dataset names are: `ksdd2`.
 
 ---
 
@@ -105,19 +101,14 @@ Config for the model and datasets is contained within train.py file. If you want
 
 We recommend taking the MVTec parameters when training on your own **unsupervised** dataset and SenumSODF parameters for **supervised** dataset.
 
-## Performance benchmark
+## FineTune
 
-Use the code inside `./perf` to evaluate performance metrics (inference speed, throughput, memory consumption, flops):
-
+FineTine model:
 ```bash
-python perf_main.py <gpu_model>.
+python ksdd2_fineTune.py
 ```
 
-Slurm script `run_slurm_perf.sh` is also provided to execute benchmark on slurm based system.
-
-Note that the results in paper are obtained with AMD Epyc 7272 CPU and NVIDIA Tesla V100S GPU and might therefore differ from the ones obtained on your system.
-
-We also include the performance results from the paper inside `paper_results`.
+tuned weights path : root (`./weights.pt`)
 
 ## Citation
 
@@ -133,3 +124,8 @@ We also include the performance results from the paper inside `paper_results`.
 ## Acknowledgement
 
 Thanks to [SimpleNet](https://github.com/DonaldRR/SimpleNet) for great inspiration.
+
+## Note
+
+> [!IMPORTANT]  
+> You have to try yourself.
